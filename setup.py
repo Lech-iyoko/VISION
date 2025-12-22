@@ -1,0 +1,41 @@
+"""Setup configuration for VISION package"""
+
+from setuptools import setup, find_packages
+from pathlib import Path
+
+# Read README for long description
+this_directory = Path(__file__).parent
+long_description = (this_directory / "README.md").read_text(encoding="utf-8")
+
+# Read requirements
+requirements = (this_directory / "requirements.txt").read_text(encoding="utf-8").splitlines()
+requirements = [r.strip() for r in requirements if r.strip() and not r.startswith("#")]
+
+setup(
+    name="vision",
+    version="0.1.0",
+    author="Lech-iyoko",
+    author_email="alechenuiyoko@gmail.com",
+    description="AI Voice Assistant with real-time processing",
+    long_description=long_description,
+    long_description_content_type="text/markdown",
+    url="https://github.com/Lech-iyoko/VISION",
+    package_dir={"": "src"},
+    packages=find_packages(where="src"),
+    python_requires=">=3.8",
+    install_requires=requirements,
+    classifiers=[
+        "Development Status :: 3 - Alpha",
+        "Intended Audience :: Developers",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+    ],
+    entry_points={
+        "console_scripts": [
+            "vision=vision.__main__:main",
+        ],
+    },
+)

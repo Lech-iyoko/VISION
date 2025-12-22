@@ -1,8 +1,9 @@
-# main.py
-from modules.voice_streamer import VoiceStreamer
-from modules.llm_client import GroqClient
-from modules.tts_client import ElevenLabsClient
+# orchestrator.py
+from vision.services.voice_streamer import VoiceStreamer
+from vision.services.llm_client import GroqClient
+from vision.services.tts_client import ElevenLabsClient
 import time
+
 
 class Orchestrator:
     def __init__(self):
@@ -46,13 +47,3 @@ class Orchestrator:
         """
         # This function blocks until streaming is stopped
         self.voice_streamer.start_streaming()
-
-if __name__ == "__main__":
-    print("--- Starting VISION Voice Loop ---")
-    try:
-        orchestrator = Orchestrator()
-        orchestrator.start()
-    except KeyboardInterrupt:
-        print("\nOrchestrator stopped by user.")
-    except Exception as e:
-        print(f"An error occurred: {e}")

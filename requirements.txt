@@ -1,0 +1,26 @@
+# Production dependencies
+
+# ASR libraries
+deepgram-sdk
+assemblyai
+
+# LLM libraries
+groq
+
+# TTS libraries
+unrealspeech
+elevenlabs
+
+# Audio libraries
+sounddevice
+websockets
+
+# Environment and utilities
+python-dotenv
+numpy
+
+# Deep learning framework
+torch
+
+# Voice activity detection
+silero-vad
