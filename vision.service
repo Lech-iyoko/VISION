@@ -1,0 +1,15 @@
+[Unit]
+Description=VISION Multimodal Assistant
+After=graphical-session.target pipewire.service pulseaudio.service
+Wants=pipewire.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/alehenuiyoko/Desktop/Projects/personal/VISION
+EnvironmentFile=/home/alehenuiyoko/Desktop/Projects/personal/VISION/.env
+ExecStart=/home/alehenuiyoko/Desktop/Projects/personal/VISION/venv/bin/python3 orchestrator.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

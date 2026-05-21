@@ -1,14 +1,14 @@
 # API Documentation
 
 ## Overview
-VISION is an AI-powered voice assistant with real-time audio processing capabilities.
+VISION is MUliti-Modal voice assistant with real-time audio processing capabilities.
 
 ## Core Components
 
 ### Services
 - **LLM Client**: Groq-based language model client
 - **TTS Client**: ElevenLabs text-to-speech client
-- **Voice Streamer**: Real-time audio streaming with Deepgram
+- **Voice Streamer**: Real-time audio streaming with Elevenlabs
 
 ### Core
 - **Orchestrator**: Main coordination logic for the voice loop

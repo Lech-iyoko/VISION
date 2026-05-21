@@ -1,14 +1,13 @@
 # Production dependencies
 
 # ASR libraries
-deepgram-sdk
 assemblyai
 
 # LLM libraries
 groq
+openai
 
 # TTS libraries
-unrealspeech
 elevenlabs
 
 # Audio libraries
@@ -24,3 +23,7 @@ torch
 
 # Voice activity detection
 silero-vad
+
+# Vision pipeline
+opencv-python
+Pillow

@@ -72,3 +72,12 @@ logs/
 *.mp3
 !data/samples/*.wav
 !data/samples/*.mp3
+
+# PortAudio local build (dependency, not project code)
+portaudio/
+
+# Test artifacts
+test_frame.jpg
+
+# Eval session logs (personal conversation transcripts)
+evals/session_*.jsonl
