@@ -5,7 +5,13 @@ Audio pipeline:
   VoiceStreamer (ASR) → AudioFrontend (AEC + VAD) → OllamaMultimodalClient (LLM+vision) → ElevenLabsClient (TTS)
 
 Vision:
-  FrameCapture — captures one fresh frame at turn time
+  ScreenStateTracker  — background thread, captures screen every 5s, sends changed
+                        frames to Gemini 2.5 Flash, maintains temporal workspace context
+  FrameCapture        — captures one fresh camera frame at turn time (physical world)
+
+Fusion:
+  FusionEngine combines transcript + screen workspace state into a grounded prompt.
+  Camera frame is passed separately as a visual attachment to the multimodal LLM.
 
 Conversation state machine:
   IDLE → LISTENING → THINKING → SPEAKING → IDLE
@@ -20,14 +26,18 @@ import time
 import threading
 import sounddevice as sd
 from services.voice.voice_streamer import VoiceStreamer
+from services.voice.local_voice_streamer import LocalVoiceStreamer
 from services.voice.audio_frontend import AudioFrontend, AudioConfig
-from services.llm_client import OllamaMultimodalClient
+from services.gemini_llm_client import GeminiLLMClient
 from services.voice.tts_client import ElevenLabsClient
+from services.voice.kokoro_tts_client import KokoroTTSClient
 from services.voice.echo_guard import is_echo
 from services.vision.frame_capture import FrameCapture
+from services.vision.screen_state import ScreenStateTracker
+from services.vision.fusion_engine import FusionEngine
 
 from dotenv import load_dotenv
-from config import DEFAULT_VOICE_ID, SYSTEM_PROMPT, DEFAULT_LLM_MODEL
+from config import DEFAULT_VOICE_ID, SYSTEM_PROMPT, GEMINI_LLM_MODEL, TTS_BACKEND, ASR_BACKEND
 from utils.eval_logger import EvaluationLogger
 
 load_dotenv()
@@ -49,8 +59,11 @@ class Orchestrator:
         print("Initializing VISION components...")
 
         # === Core Components ===
-        self.llm_client = OllamaMultimodalClient(system_prompt=SYSTEM_PROMPT)
-        self.tts_client = ElevenLabsClient(voice_id=DEFAULT_VOICE_ID)
+        self.llm_client = GeminiLLMClient(system_prompt=SYSTEM_PROMPT)
+        if TTS_BACKEND == "kokoro":
+            self.tts_client = KokoroTTSClient()
+        else:
+            self.tts_client = ElevenLabsClient(voice_id=DEFAULT_VOICE_ID)
 
         # Audio processing pipeline
         self.audio_frontend = AudioFrontend(AudioConfig(
@@ -62,9 +75,14 @@ class Orchestrator:
         ))
 
         # ASR streaming
-        self.voice_streamer = VoiceStreamer(
-            on_final_transcript=self._handle_transcript
-        )
+        if ASR_BACKEND == "local":
+            self.voice_streamer = LocalVoiceStreamer(
+                on_final_transcript=self._handle_transcript
+            )
+        else:
+            self.voice_streamer = VoiceStreamer(
+                on_final_transcript=self._handle_transcript
+            )
 
         # === Wire up callbacks ===
         self.audio_frontend.on_barge_in = self._handle_barge_in
@@ -82,13 +100,15 @@ class Orchestrator:
         self._barge_in_lock = threading.Lock()
         self._turn_barged_in = False
 
-        # === Vision — single frame at turn time ===
+        # === Vision ===
         self.framecapture = FrameCapture(camera_index=0)
+        self.screen_tracker = ScreenStateTracker()
+        self.fusion = FusionEngine()
 
         # Evaluation logger
         self.eval_logger = EvaluationLogger(
-            llm_model=DEFAULT_LLM_MODEL,
-            vlm_model="none",
+            llm_model=GEMINI_LLM_MODEL,
+            vlm_model="gemini-2.5-flash",
         )
 
     # ── state ────────────────────────────────────────────────────────────────
@@ -134,17 +154,31 @@ class Orchestrator:
         self.voice_streamer.mute()
 
         try:
-            # Capture one fresh frame at the moment of the turn
+            # Camera frame — physical world context (instant)
             vision_fetch_start = time.time()
             frame = self.framecapture.get_frame()
             vision_fetch_ms = int((time.time() - vision_fetch_start) * 1000)
             print(f"📷 Frame captured in {vision_fetch_ms}ms" if frame else "📷 No frame")
 
+            # Screen context — pre-built by background tracker (instant read)
+            workspace_state = self.screen_tracker.get_workspace_state()
+            screen_age_s = self.screen_tracker.state_age_s()
+            if workspace_state:
+                print(f"🖥️  Screen context ({screen_age_s:.0f}s old): {workspace_state[:80]}...")
+            else:
+                print("🖥️  No screen context yet")
+
+            # Fuse transcript + workspace state into grounded prompt
+            prompt = self.fusion.combine(
+                transcript=transcript,
+                workspace_state=workspace_state or None,
+            )
+
             print("🤔 Thinking (streaming)...")
             self._set_state(ConversationState.SPEAKING)
 
             llm_start = time.time()
-            full_response, first_audio_ms = self._stream_response_to_speech(transcript, frame)
+            full_response, first_audio_ms = self._stream_response_to_speech(prompt, frame)
             llm_ms = int((time.time() - llm_start) * 1000)
 
             print(f"[VISION]: {full_response}")
@@ -155,8 +189,8 @@ class Orchestrator:
             self.eval_logger.log_turn(
                 transcript=transcript,
                 response=full_response,
-                visual_context_preview="[frame attached]" if frame else "",
-                vision_age_before_s=0,
+                visual_context_preview=workspace_state[:150] if workspace_state else "",
+                vision_age_before_s=round(screen_age_s, 1),
                 vision_fetch_ms=vision_fetch_ms,
                 llm_latency_ms=llm_ms,
                 e2e_to_speech_ms=e2e_ms,
@@ -205,13 +239,7 @@ class Orchestrator:
                     if not text.strip() or stopped:
                         return
                     print(f"  🔊 → {text[:70]}{'...' if len(text) > 70 else ''}")
-                    audio_gen = self.tts_client.client.text_to_speech.stream(
-                        text=text,
-                        voice_id=self.tts_client.voice_id,
-                        model_id=self.tts_client.model_id,
-                        output_format=f"pcm_{self.tts_client.sample_rate}",
-                    )
-                    for chunk in audio_gen:
+                    for chunk in self.tts_client.stream_sentence(text):
                         if self._check_barge_in():
                             stopped = True
                             return
@@ -256,6 +284,7 @@ class Orchestrator:
     # ── lifecycle ────────────────────────────────────────────────────────────
 
     def start(self):
+        self.screen_tracker.start()
         print("\n🚀 VISION is ready!")
         print("Speak into your microphone. Press Ctrl+C to exit.\n")
         self._set_state(ConversationState.LISTENING)
@@ -263,6 +292,7 @@ class Orchestrator:
 
     def stop(self):
         print("\nShutting down VISION...")
+        self.screen_tracker.stop()
         self.framecapture.release()
 
 

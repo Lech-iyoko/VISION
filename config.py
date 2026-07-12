@@ -3,6 +3,9 @@
 
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Project root directory
 ROOT_DIR = Path(__file__).parent
@@ -15,12 +18,33 @@ SAMPLES_DIR = DATA_DIR / "samples"
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Voice settings
+# Screen pipeline settings
+SCREEN_CAPTURE_INTERVAL_S = 5.0      # seconds between capture attempts
+SCREEN_DIFF_THRESHOLD = 0.02         # 2% pixel change triggers a Gemini call
+SCREEN_GEMINI_MODEL = "gemini-2.5-flash-lite"
+SCREEN_STATE_BUFFER_SIZE = 10        # number of descriptions to keep in rolling buffer
+
+# ASR backend — "local" (faster-whisper) or "assemblyai"
+ASR_BACKEND = "local"
+
+# Whisper model for local ASR — tiny / base / small / small.en / medium
+# small.en: best speed/accuracy balance for English-only use
+WHISPER_MODEL = "small.en"
+
+# TTS backend — "elevenlabs" or "kokoro"
+TTS_BACKEND = "kokoro"
+
+# ElevenLabs voice ID
 DEFAULT_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb"
 
+# Kokoro voice — options: af_heart, af_bella, am_adam, am_michael, bm_george, bm_daniel
+KOKORO_VOICE = "bm_george"
+
 # Model settings
-DEFAULT_LLM_MODEL = "gemma4:e2b"
+DEFAULT_LLM_MODEL = "gemma4:e2b"        # local Ollama model (for local eval)
+GEMINI_LLM_MODEL = "gemini-2.5-flash-lite"  # cloud LLM (active)
 
 # Set False to disable internal chain-of-thought (lower latency, less reasoning depth).
 # With thinking ON:  short responses ~6-8s, long ~20-45s (includes silent CoT time).
@@ -37,7 +61,12 @@ SYSTEM_PROMPT = """You are VISION — an advanced personal AI assistant. You are
 
 Your primary role is to support your user in engineering work — software architecture, systems design, robotics, AI, and hardware — but you are a general-purpose assistant and handle anything asked of you.
 
-You have access to a live camera feed. When visual context is provided, you perceive your user's environment and may reference it naturally if it is relevant to the conversation.
+Your user is Alechenu Iyoko — he goes by Lech. Address him as "sir" in the JARVIS tradition, but use "Lech" occasionally for a personal touch when the moment calls for it. He is a Mechatronics and Robotics graduate, now an Engineering Consultant and Lead Engineer building AI systems professionally and personally. He is Nigerian, and his work is driven by a mission to build embodied AI that improves healthcare, security, and living standards in under-industrialised societies. VISION — you — is his long-term personal project: a predictive multimodal assistant he is building from scratch to learn AI fundamentals through practice. You are both his tool and his curriculum. Physically: a young Black man. Trust what the camera shows over this description — appearance changes, the camera is always current.
+
+You have two sources of visual information. Use them correctly:
+- The attached image is the CAMERA — it shows your user's physical environment (their face, room, hands, surroundings). Use it when the user asks what you see, references themselves, or asks about something physical.
+- The [DISPLAY] section in the prompt is the SCREEN — a text description of what is on the user's computer monitor (code, terminal output, browser, files). Use it when the user asks about their screen, terminal, code, or anything on their computer.
+Never confuse the two. If the user says "describe my screen", use [DISPLAY]. If they say "what do you see" or "describe me", use the camera.
 
 Behavioral guidelines:
 - NEVER use markdown: no asterisks, no bold, no italics, no bullet points, no numbered lists, no headers, no code blocks. Plain prose only — your output goes directly to a voice speaker.

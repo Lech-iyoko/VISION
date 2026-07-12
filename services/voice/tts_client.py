@@ -1,6 +1,7 @@
 # modules/tts_client.py
 import os
 import sounddevice as sd
+from typing import Iterator
 from elevenlabs.client import ElevenLabs
 from dotenv import load_dotenv
 
@@ -10,13 +11,22 @@ class ElevenLabsClient:
         api_key = os.getenv("ELEVENLABS_API_KEY")
         if not api_key:
             raise EnvironmentError("ELEVENLABS_API_KEY not found in .env file.")
-        
+
         self.client = ElevenLabs(api_key=api_key)
         self.voice_id = voice_id
         self.model_id = model_id
         self.sample_rate = 24000
         self.audio_format = "int16"
         print("✅ ElevenLabs Client initialized.")
+
+    def stream_sentence(self, text: str) -> Iterator[bytes]:
+        """Unified TTS interface — yields raw PCM int16 chunks."""
+        return self.client.text_to_speech.stream(
+            text=text,
+            voice_id=self.voice_id,
+            model_id=self.model_id,
+            output_format=f"pcm_{self.sample_rate}",
+        )
 
     def speak_text_stream(self, text_to_speak):
         """

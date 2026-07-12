@@ -1,21 +1,28 @@
 class FusionEngine():
     """
-    Resonsible for integrating visual context into the conversation flow.
-    Combines trscript, visual context, and memory into a single prompt for the LLM.
+    Combines transcript, screen workspace context, camera context, and memory
+    into a single grounded prompt for the LLM.
     """
 
-    def combine(self, transcript, visual_context=None, memory=None):
+    def combine(
+        self,
+        transcript: str,
+        workspace_state: str | None = None,
+        visual_context: str | None = None,
+        memory: str | None = None,
+    ) -> str:
         parts = []
 
         if memory:
             parts.append(f"[Conversation Memory]:\n{memory}")
 
+        if workspace_state:
+            parts.append(f"[DISPLAY — computer screen content, text description]:\n{workspace_state}")
+
         if visual_context:
-            parts.append(f"[Visual Context]: {visual_context}")
+            parts.append(f"[CAMERA — physical room, see attached image]: {visual_context}")
 
-        parts.append(f"[User Said]:\n{transcript}")
-
-        parts.append("\n[Instruction]: Respond helpfully. If relevant, reference what you see.")
+        parts.append(f"[User Said]: {transcript}")
 
         return "\n\n".join(parts)
 
