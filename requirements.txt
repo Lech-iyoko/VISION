@@ -1,13 +1,22 @@
 # Production dependencies
 
-# ASR libraries
+# ASR — active local backend
+faster-whisper
+
+# ASR — alternate cloud backend
 assemblyai
 
-# LLM libraries
+# LLM — active (Gemini)
+google-genai
+
+# LLM — legacy/eval backends
 groq
 openai
 
-# TTS libraries
+# TTS — active local backend (requires espeak-ng system package)
+kokoro
+
+# TTS — alternate cloud backend
 elevenlabs
 
 # Audio libraries
@@ -27,3 +36,4 @@ silero-vad
 # Vision pipeline
 opencv-python
 Pillow
+mss

@@ -4,41 +4,52 @@
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-A real-time voice and vision AI assistant — designed to be what JARVIS was to Tony Stark. VISION listens, sees, thinks, and speaks. It runs a local multimodal LLM on consumer GPU hardware and streams responses to speech as they are generated, keeping perceived latency under 5 seconds.
+A real-time voice and vision AI assistant — designed to be what JARVIS was to Tony Stark. VISION listens, sees, thinks, and speaks. The voice pipeline (ASR + TTS) runs fully local on consumer GPU hardware; reasoning runs on Gemini 2.5 Flash-Lite. It perceives both the physical world (webcam) and the digital workspace (screen), and streams responses to speech as they are generated.
 
 ---
 
 ## Architecture
 
 ```
-Microphone ──→ AssemblyAI (streaming ASR)
-                        │
-                        ▼
-              Webcam ──→ gemma4:e2b (Ollama)   ← single multimodal model
-                        │                         sees frame + transcript
-                        ▼ token stream
-              Sentence buffer
-                        │ first sentence ready (~500ms into generation)
-                        ▼
-              ElevenLabs (streaming TTS)
-                        │
-                        ▼
-                    Speaker
+Microphone ──→ Silero VAD ──→ faster-whisper (local ASR, GPU)
+                                      │ transcript
+                                      ▼
+Screen ──→ pixel-diff gate ──→ Gemini Flash-Lite ──→ rolling workspace state
+   (every 5s, background)       (only on change)          │
+                                                          ▼
+                                                    FusionEngine
+                                                          │ grounded prompt
+Webcam ──→ fresh frame at turn time ──────────────────────┤ (image attached)
+                                                          ▼
+                                        Gemini 2.5 Flash-Lite (streaming LLM)
+                                                          │ token stream
+                                                          ▼
+                                                  Sentence buffer
+                                                          │ first sentence ready
+                                                          ▼
+                                          Kokoro-82M (local TTS, 24kHz)
+                                                          ▼
+                                                      Speaker
 ```
 
-The key design decision: a **single multimodal model** (gemma4:e2b) replaces what was previously a two-model pipeline (separate LLM + VLM). The raw camera frame is attached directly to the prompt — no lossy text-description bottleneck.
+Two key design decisions:
 
-**Streaming pipeline:** LLM tokens are buffered into sentences and sent to TTS as each sentence completes. One audio output stream stays open across all sentences, so the user hears the first sentence while the model is still generating the rest. Audio starts within ~500ms of the first output token.
+1. **Hybrid local/cloud split.** Everything latency-critical and always-on (VAD, ASR, TTS) runs locally on the GPU — no per-turn network round-trips for audio. The LLM runs in the cloud where a stronger model is affordable per token. Backends are switchable in `config.py` (`ASR_BACKEND`, `TTS_BACKEND`), so the old cloud voice stack (AssemblyAI + ElevenLabs) remains one flag away.
+
+2. **Dual visual grounding.** The camera frame is attached raw to the prompt (physical world). The screen is tracked by a background thread — captured every 5 seconds, gated by a pixel diff so only meaningful changes trigger a Gemini description, accumulated into a rolling temporal buffer ("32s ago: …"). The system prompt teaches the model to keep the two sources separate: `[DISPLAY]` for screen questions, the attached image for physical ones.
+
+**Streaming pipeline:** LLM tokens are buffered into sentences and sent to TTS as each sentence completes. One audio output stream stays open across all sentences, so the user hears the first sentence while the model is still generating the rest.
 
 ---
 
 ## Features
 
-- **Real-time voice interaction** — AssemblyAI Universal Streaming with end-of-turn detection
-- **Live vision** — single fresh frame captured at turn time, attached directly to the LLM prompt
+- **Fully local voice loop** — Silero VAD segmentation + faster-whisper (`small.en`) ASR, Kokoro-82M TTS
+- **Screen awareness** — background tracker maintains a temporal description of the user's workspace; VISION can answer "what's on my screen?" and reference code, terminals, and errors
+- **Live camera vision** — single fresh frame captured at turn time, attached directly to the LLM prompt
 - **Barge-in** — Silero VAD detects speech during playback; user can interrupt mid-sentence
 - **Acoustic Echo Cancellation** — prevents TTS audio from being picked up as mic input
-- **Streaming LLM → TTS** — sentence-buffered pipeline reduces time-to-first-audio vs. waiting for full response
+- **Streaming LLM → TTS** — sentence-buffered pipeline minimizes time-to-first-audio
 - **Evaluation logger** — per-turn JSONL logs capturing `time_to_first_audio_ms`, `llm_latency_ms`, `vision_fetch_ms`, and response quality
 
 ---
@@ -47,25 +58,23 @@ The key design decision: a **single multimodal model** (gemma4:e2b) replaces wha
 
 | Component | Technology |
 |---|---|
-| Multimodal LLM | `gemma4:e2b` via [Ollama](https://ollama.com) (local, RTX 5060 8GB) |
-| Speech-to-Text | [AssemblyAI](https://www.assemblyai.com/) Universal Streaming |
-| Text-to-Speech | [ElevenLabs](https://elevenlabs.io/) streaming |
+| LLM | [Gemini 2.5 Flash-Lite](https://ai.google.dev/) (streaming, thinking budget configurable) |
+| Speech-to-Text | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) `small.en` (local, GPU) |
+| Text-to-Speech | [Kokoro-82M](https://github.com/hexgrad/kokoro) (local, 24kHz PCM) |
+| Screen capture | [mss](https://github.com/BoboTiG/python-mss) + OpenCV pixel diff |
+| Screen description | Gemini 2.5 Flash-Lite (only on meaningful change) |
 | Voice Activity Detection | [Silero VAD](https://github.com/snakers4/silero-vad) (local) |
 | Acoustic Echo Cancellation | Custom correlation-based AEC |
 | Audio I/O | SoundDevice / PortAudio |
 | Language | Python 3.10+ |
 
+Alternate backends (flag-switchable): [AssemblyAI](https://www.assemblyai.com/) streaming ASR, [ElevenLabs](https://elevenlabs.io/) TTS, `gemma4:e2b` via [Ollama](https://ollama.com) for local LLM evaluation.
+
 ---
 
 ## Latency Benchmarking
 
-The `evals/` directory contains a three-way benchmark (`benchmark_multimodal.py`) comparing:
-
-1. **Cloud cascade** — Groq (llama-3.3-70b) + Llama4-Scout VLM
-2. **Local dual-model** — qwen3:8b (GPU) + moondream (CPU)
-3. **Local single multimodal** — gemma4:e2b (current)
-
-Key results from production session logs:
+The `evals/` directory contains per-session JSONL logs and a three-way benchmark (`benchmark_multimodal.py`) from the earlier local-LLM phase, comparing a cloud cascade (Groq + Llama4-Scout VLM), a local dual-model pipeline (qwen3:8b + moondream), and a local single multimodal model (gemma4:e2b):
 
 | Metric | qwen3 + moondream | gemma4:e2b (streaming) |
 |---|---|---|
@@ -73,7 +82,7 @@ Key results from production session logs:
 | Time to first audio | not measured | 4,200 ms avg (thinking ON) |
 | E2E avg (incl. playback) | 24,700 ms | 4,100–13,000 ms |
 
-The `THINKING_ENABLED` flag in `config.py` controls gemma4's internal chain-of-thought. With thinking OFF, `time_to_first_audio_ms` is expected to drop to under 1 second.
+Those results motivated the current architecture: the screen tracker pre-builds visual context in the background (zero cost at turn time), and `THINKING_ENABLED = False` disables the LLM's chain-of-thought for lower time-to-first-audio.
 
 ---
 
@@ -82,17 +91,11 @@ The `THINKING_ENABLED` flag in `config.py` controls gemma4's internal chain-of-t
 ### Prerequisites
 
 - Python 3.10+
-- [Ollama](https://ollama.com) installed and running
-- NVIDIA GPU (8GB+ VRAM recommended for gemma4:e2b)
-- API keys for AssemblyAI and ElevenLabs
+- NVIDIA GPU (8GB+ VRAM — runs faster-whisper and Kokoro)
+- `espeak-ng` system package (Kokoro dependency): `sudo apt install espeak-ng`
+- A [Gemini API key](https://aistudio.google.com/apikey)
 
-### 1. Pull the model
-
-```bash
-ollama pull gemma4:e2b
-```
-
-### 2. Install dependencies
+### 1. Install dependencies
 
 ```bash
 python -m venv .venv
@@ -100,22 +103,25 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Configure API keys
+### 2. Configure API keys
 
 Create a `.env` file in the project root:
 
 ```env
+GEMINI_API_KEY=your_key_here
+
+# Optional — only needed if switching back to cloud voice backends
 ASSEMBLYAI_API_KEY=your_key_here
 ELEVENLABS_API_KEY=your_key_here
 ```
 
-### 4. Run
+### 3. Run
 
 ```bash
 python orchestrator.py
 ```
 
-Speak into your microphone. VISION listens, captures a frame when you finish speaking, generates a response, and streams it to your speakers. Press `Ctrl+C` to exit.
+Speak into your microphone. VISION listens, fuses the transcript with screen context and a fresh camera frame, generates a response, and streams it to your speakers. Press `Ctrl+C` to exit.
 
 ---
 
@@ -125,9 +131,14 @@ All settings are in `config.py`:
 
 | Setting | Default | Description |
 |---|---|---|
-| `DEFAULT_LLM_MODEL` | `gemma4:e2b` | Ollama model name |
-| `THINKING_ENABLED` | `True` | Enable/disable chain-of-thought reasoning |
-| `DEFAULT_VOICE_ID` | ElevenLabs voice ID | TTS voice |
+| `GEMINI_LLM_MODEL` | `gemini-2.5-flash-lite` | Active LLM |
+| `ASR_BACKEND` | `local` | `local` (faster-whisper) or `assemblyai` |
+| `TTS_BACKEND` | `kokoro` | `kokoro` or `elevenlabs` |
+| `WHISPER_MODEL` | `small.en` | Local ASR model size |
+| `KOKORO_VOICE` | `bm_george` | Local TTS voice |
+| `THINKING_ENABLED` | `False` | LLM chain-of-thought (off = lower latency) |
+| `SCREEN_CAPTURE_INTERVAL_S` | `5.0` | Seconds between screen capture attempts |
+| `SCREEN_DIFF_THRESHOLD` | `0.02` | Pixel-change fraction that triggers a screen description |
 | `SYSTEM_PROMPT` | JARVIS-style persona | Injected on every LLM call |
 
 ---
@@ -135,28 +146,38 @@ All settings are in `config.py`:
 ## Project Structure
 
 ```
-orchestrator.py          # Main coordinator and conversation state machine
-config.py                # All settings and the system prompt
+orchestrator.py            # Main coordinator and conversation state machine
+config.py                  # All settings, backend switches, and the system prompt
 services/
-  llm_client.py          # OllamaMultimodalClient — streaming + vision
+  gemini_llm_client.py     # Gemini 2.5 Flash-Lite streaming client (active LLM)
+  llm_client.py            # OllamaMultimodalClient (local LLM, eval use)
   vision/
-    frame_capture.py     # Webcam capture with buffer flush
+    screen_state.py        # Background screen tracker → temporal workspace state
+    screen_capture.py      # mss screen grab + pixel-diff change gate
+    frame_capture.py       # Webcam capture with buffer flush
+    fusion_engine.py       # Combines transcript + [DISPLAY] + [CAMERA] into one prompt
   voice/
-    voice_streamer.py    # AssemblyAI streaming ASR + Silero VAD
-    tts_client.py        # ElevenLabs TTS client
-    audio_frontend.py    # AEC + VAD pipeline
-    echo_guard.py        # Text-level echo detection
+    local_voice_streamer.py  # Silero VAD + faster-whisper ASR (active)
+    kokoro_tts_client.py     # Kokoro-82M local TTS (active)
+    voice_streamer.py        # AssemblyAI streaming ASR (alternate)
+    tts_client.py            # ElevenLabs TTS client (alternate)
+    audio_frontend.py        # AEC + VAD pipeline
+    echo_guard.py            # Text-level echo detection
 utils/
-  eval_logger.py         # Per-turn JSONL evaluation logger
+  eval_logger.py           # Per-turn JSONL evaluation logger
 evals/
   benchmark_multimodal.py  # Three-way latency benchmark script
+docs/
+  code-review-map.md       # Guided reading order for the codebase
 ```
 
 ---
 
 ## Roadmap
 
+- [x] Local voice stack (faster-whisper ASR + Kokoro TTS)
+- [x] Screen awareness with temporal workspace context
 - [ ] Conversation memory (sliding window history)
 - [ ] Tool use / function calling
-- [ ] Native speech-to-speech via Gemini Live API (target: <1s latency)
+- [ ] Proactive assistance — screen tracker's trigger mechanism exists but is unwired
 - [ ] Raspberry Pi 5 integration — offload voice pipeline to free GPU for robotics work
