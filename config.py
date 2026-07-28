@@ -26,8 +26,31 @@ SCREEN_DIFF_THRESHOLD = 0.02         # 2% pixel change triggers a Gemini call
 SCREEN_GEMINI_MODEL = "gemini-2.5-flash-lite"
 SCREEN_STATE_BUFFER_SIZE = 10        # number of descriptions to keep in rolling buffer
 
+# Proactive trigger — VISION speaks unprompted when the screen tracker
+# detects a high-signal event (error, crash, traceback) while idle.
+PROACTIVE_ENABLED = True
+PROACTIVE_COOLDOWN_S = 60.0          # minimum seconds between proactive alerts
+PROACTIVE_SIMILARITY_THRESHOLD = 0.75  # skip alerts this similar to the last one spoken
+
 # ASR backend — "local" (faster-whisper) or "assemblyai"
 ASR_BACKEND = "local"
+
+# End-of-turn detection (local ASR only) — "smart_turn" or "fixed"
+#   fixed:      end turn after a fixed silence window (original behavior, 480ms)
+#   smart_turn: pipecat smart-turn v3 predicts turn completion from prosody;
+#               ends fast (~200ms) on a confident finish, waits longer on a
+#               mid-thought pause. Falls back to "fixed" if the model can't load.
+EOT_BACKEND = "smart_turn"
+EOT_THRESHOLD = 0.5            # P(complete) needed to end the turn early
+EOT_CHECK_SILENCE_MS = 160     # first smart-turn check, this long into silence
+EOT_RECHECK_SILENCE_MS = 576   # second check if the first said "not done"
+EOT_MAX_SILENCE_MS = 1280      # hard cap: end turn after this much silence regardless
+
+# Speculative ASR — start Whisper on the buffered speech at the first silence
+# checkpoint, in parallel with the end-of-turn decision. If the user resumes
+# speaking the result is discarded; if the turn ends, the transcript is already
+# (nearly) done — removing Whisper from the critical latency path.
+SPECULATIVE_ASR_ENABLED = True
 
 # Whisper model for local ASR — tiny / base / small / small.en / medium
 # small.en: best speed/accuracy balance for English-only use

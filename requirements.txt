@@ -34,6 +34,7 @@ torch
 silero-vad
 
 # Vision pipeline
+# Screen capture uses the `cosmic-screenshot` system binary (COSMIC/Wayland
+# portal), not a Python package — no pip dependency for it.
 opencv-python
 Pillow
-mss

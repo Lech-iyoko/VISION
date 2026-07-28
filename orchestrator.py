@@ -9,6 +9,11 @@ Vision:
                         frames to Gemini 2.5 Flash, maintains temporal workspace context
   FrameCapture        — captures one fresh camera frame at turn time (physical world)
 
+Proactive trigger:
+  When the screen tracker detects a high-signal event (error, crash, traceback)
+  and the system is idle-listening, VISION speaks up unprompted. Gated by a
+  cooldown and a similarity check so the same issue is only announced once.
+
 Fusion:
   FusionEngine combines transcript + screen workspace state into a grounded prompt.
   Camera frame is passed separately as a visual attachment to the multimodal LLM.
@@ -24,6 +29,7 @@ of LLM output) rather than after the full response.
 import re
 import time
 import threading
+from difflib import SequenceMatcher
 import sounddevice as sd
 from services.voice.voice_streamer import VoiceStreamer
 from services.voice.local_voice_streamer import LocalVoiceStreamer
@@ -37,7 +43,10 @@ from services.vision.screen_state import ScreenStateTracker
 from services.vision.fusion_engine import FusionEngine
 
 from dotenv import load_dotenv
-from config import DEFAULT_VOICE_ID, SYSTEM_PROMPT, GEMINI_LLM_MODEL, TTS_BACKEND, ASR_BACKEND
+from config import (
+    DEFAULT_VOICE_ID, SYSTEM_PROMPT, GEMINI_LLM_MODEL, TTS_BACKEND, ASR_BACKEND,
+    PROACTIVE_ENABLED, PROACTIVE_COOLDOWN_S, PROACTIVE_SIMILARITY_THRESHOLD,
+)
 from utils.eval_logger import EvaluationLogger
 
 load_dotenv()
@@ -102,8 +111,14 @@ class Orchestrator:
 
         # === Vision ===
         self.framecapture = FrameCapture(camera_index=0)
-        self.screen_tracker = ScreenStateTracker()
+        self.screen_tracker = ScreenStateTracker(
+            on_proactive_trigger=self._handle_screen_alert
+        )
         self.fusion = FusionEngine()
+
+        # Proactive alert dedup — remember what was last announced and when
+        self._last_proactive_desc = ""
+        self._last_proactive_time = 0.0
 
         # Evaluation logger
         self.eval_logger = EvaluationLogger(
@@ -134,6 +149,99 @@ class Orchestrator:
                 self._barge_in_requested = False
                 return True
             return False
+
+    # ── proactive trigger ────────────────────────────────────────────────────
+
+    def _handle_screen_alert(self, description: str):
+        """
+        Called by ScreenStateTracker (on its background thread) when a
+        high-signal screen event is detected. Decides whether to interject,
+        then hands off to a turn thread — this method must return quickly
+        so the screen loop is never blocked by speech.
+        """
+        if not PROACTIVE_ENABLED:
+            return
+
+        if time.time() - self._last_proactive_time < PROACTIVE_COOLDOWN_S:
+            print("🔕 Proactive alert suppressed (cooldown)")
+            return
+
+        similarity = SequenceMatcher(
+            None, description.lower(), self._last_proactive_desc.lower()
+        ).ratio()
+        if similarity >= PROACTIVE_SIMILARITY_THRESHOLD:
+            print(f"🔕 Proactive alert suppressed (same issue, {similarity:.0%} match)")
+            return
+
+        # Claim the turn atomically: only interject when idle-listening,
+        # and flip to THINKING inside the lock so a user transcript arriving
+        # at the same moment can't start a competing turn.
+        with self.state_lock:
+            if self.state != ConversationState.LISTENING:
+                print(f"🔕 Proactive alert dropped (state={self.state})")
+                return
+            self.state = ConversationState.THINKING
+            print(f"📍 State: {ConversationState.LISTENING} → {self.state} (proactive)")
+
+        self._last_proactive_time = time.time()
+        self._last_proactive_desc = description
+
+        threading.Thread(
+            target=self._proactive_turn, args=(description,),
+            daemon=True, name="proactive-turn",
+        ).start()
+
+    def _proactive_turn(self, description: str):
+        """
+        Speak an unprompted alert about a screen event. Mirrors the
+        _handle_transcript flow but with a synthetic prompt and no camera
+        frame — the screen event itself is the context.
+        """
+        print(f"\n🚨 [Proactive]: {description[:100]}")
+
+        turn_start = time.time()
+        self._turn_barged_in = False
+        self.voice_streamer.mute()
+
+        try:
+            prompt = (
+                "[PROACTIVE ALERT — you just noticed this on the user's screen. "
+                "He has not said anything. Briefly alert him in one or two "
+                "spoken sentences: what you saw and, if obvious, a next step. "
+                "Do not mention that this is an automated alert.]\n\n"
+                f"{description}"
+            )
+
+            self._set_state(ConversationState.SPEAKING)
+
+            llm_start = time.time()
+            full_response, first_audio_ms = self._stream_response_to_speech(prompt, None)
+            llm_ms = int((time.time() - llm_start) * 1000)
+
+            print(f"[VISION, unprompted]: {full_response}")
+
+            self.last_tts_text = full_response
+            e2e_ms = int((time.time() - turn_start) * 1000)
+
+            self.eval_logger.log_turn(
+                transcript="[PROACTIVE]",
+                response=full_response,
+                visual_context_preview=description[:150],
+                vision_age_before_s=0.0,
+                vision_fetch_ms=0,
+                llm_latency_ms=llm_ms,
+                e2e_to_speech_ms=e2e_ms,
+                barge_in=self._turn_barged_in,
+                time_to_first_audio_ms=first_audio_ms,
+            )
+
+        finally:
+            self._set_state(ConversationState.LISTENING)
+            time.sleep(0.3)
+            self.voice_streamer.unmute()
+            self.audio_frontend.reset()
+
+        print("\n✅ Ready for next input...")
 
     # ── main conversation loop ────────────────────────────────────────────────
 
@@ -196,6 +304,8 @@ class Orchestrator:
                 e2e_to_speech_ms=e2e_ms,
                 barge_in=self._turn_barged_in,
                 time_to_first_audio_ms=first_audio_ms,
+                # EOT/ASR timing from the local streamer (empty dict on assemblyai)
+                extras=getattr(self.voice_streamer, "last_turn_timing", None),
             )
 
         finally:

@@ -38,6 +38,7 @@ class EvaluationLogger:
         e2e_to_speech_ms: int,
         barge_in: bool,
         time_to_first_audio_ms: int = -1,
+        extras: dict | None = None,
     ) -> None:
         self._turn += 1
         record = {
@@ -56,5 +57,7 @@ class EvaluationLogger:
             "e2e_to_speech_ms": e2e_to_speech_ms,
             "barge_in": barge_in,
         }
+        if extras:
+            record.update(extras)
         with open(self.log_file, "a") as f:
             f.write(json.dumps(record) + "\n")
